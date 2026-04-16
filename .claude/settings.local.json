@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(nvm list *)",
+      "Read(//c/Users/Yashal/AppData/Roaming/**)",
+      "Bash(npx --version)",
+      "Bash(npx create-next-app@14 --version)",
+      "Read(//c/Users/Yashal/.claude/projects/c--Users-Yashal/**)",
+      "Read(//c/Users/Yashal/.claude/projects/c--Users-Yashal/memory/**)"
+    ]
+  }
+}
