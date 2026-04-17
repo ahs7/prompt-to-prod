@@ -1,60 +1,33 @@
 import "server-only";
-import fs from "fs";
-import path from "path";
 import type { Scan, ReportRecord } from "@/lib/schemas/scan";
 
-const DATA_DIR = path.join(process.cwd(), ".local-data");
-const SCANS_FILE = path.join(DATA_DIR, "scans.json");
-const REPORTS_FILE = path.join(DATA_DIR, "reports.json");
-
-function ensureDataDir(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-}
-
-function readJSON<T>(filePath: string): T[] {
-  ensureDataDir();
-  if (!fs.existsSync(filePath)) return [];
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8");
-    return JSON.parse(raw) as T[];
-  } catch {
-    return [];
-  }
-}
-
-function writeJSON<T>(filePath: string, data: T[]): void {
-  ensureDataDir();
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
-}
+// In-memory store — used as fallback when Supabase is not configured.
+// Data does not persist across server restarts.
+const scans = new Map<string, Scan>();
+const reports = new Map<string, ReportRecord>();
 
 // ──────────────────────────────────────────────
 // Scans
 // ──────────────────────────────────────────────
 
 export function localGetScan(id: string): Scan | null {
-  const scans = readJSON<Scan>(SCANS_FILE);
-  return scans.find((s) => s.id === id) ?? null;
+  return scans.get(id) ?? null;
 }
 
 export function localCreateScan(scan: Scan): void {
-  const scans = readJSON<Scan>(SCANS_FILE);
-  scans.push(scan);
-  writeJSON(SCANS_FILE, scans);
+  scans.set(scan.id, scan);
 }
 
 export function localUpdateScan(id: string, updates: Partial<Scan>): void {
-  const scans = readJSON<Scan>(SCANS_FILE);
-  const idx = scans.findIndex((s) => s.id === id);
-  if (idx === -1) return;
-  scans[idx] = { ...scans[idx], ...updates };
-  writeJSON(SCANS_FILE, scans);
+  const existing = scans.get(id);
+  if (!existing) return;
+  scans.set(id, { ...existing, ...updates });
 }
 
 export function localListScans(limit = 20): Scan[] {
-  const scans = readJSON<Scan>(SCANS_FILE);
-  return scans.slice(-limit).reverse();
+  return [...scans.values()]
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, limit);
 }
 
 // ──────────────────────────────────────────────
@@ -62,27 +35,30 @@ export function localListScans(limit = 20): Scan[] {
 // ──────────────────────────────────────────────
 
 export function localGetReport(id: string): ReportRecord | null {
-  const reports = readJSON<ReportRecord>(REPORTS_FILE);
-  return reports.find((r) => r.id === id) ?? null;
+  return reports.get(id) ?? null;
 }
 
 export function localGetReportByScanId(scanId: string): ReportRecord | null {
-  const reports = readJSON<ReportRecord>(REPORTS_FILE);
-  return reports.find((r) => r.scan_id === scanId) ?? null;
+  for (const report of reports.values()) {
+    if (report.scan_id === scanId) return report;
+  }
+  return null;
 }
 
 export function localCreateReport(report: ReportRecord): void {
-  const reports = readJSON<ReportRecord>(REPORTS_FILE);
-  reports.push(report);
-  writeJSON(REPORTS_FILE, reports);
+  reports.set(report.id, report);
 }
 
 export function localListReports(limit = 20): ReportRecord[] {
-  const reports = readJSON<ReportRecord>(REPORTS_FILE);
-  return reports.filter((r) => !r.is_demo).slice(-limit).reverse();
+  return [...reports.values()]
+    .filter((r) => !r.is_demo)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, limit);
 }
 
 export function localGetDemoReport(): ReportRecord | null {
-  const reports = readJSON<ReportRecord>(REPORTS_FILE);
-  return reports.find((r) => r.is_demo) ?? null;
+  for (const report of reports.values()) {
+    if (report.is_demo) return report;
+  }
+  return null;
 }

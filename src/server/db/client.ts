@@ -37,8 +37,8 @@ export async function dbGetScan(id: string): Promise<Scan | null> {
       .eq("id", id)
       .single();
     if (error) {
-      console.error("[db] Supabase getScan error, falling back:", error.message);
-      return localGetScan(id);
+      console.error("[db] getScan:", error.message);
+      return null;
     }
     return data as Scan;
   }
@@ -49,10 +49,7 @@ export async function dbCreateScan(scan: Scan): Promise<void> {
   if (useSupabase()) {
     const supabase = await getSupabaseClient();
     const { error } = await supabase.from("scans").insert(scan);
-    if (error) {
-      console.error("[db] Supabase createScan error, falling back:", error.message);
-      localCreateScan(scan);
-    }
+    if (error) console.error("[db] createScan:", error.message);
     return;
   }
   localCreateScan(scan);
@@ -65,10 +62,7 @@ export async function dbUpdateScan(
   if (useSupabase()) {
     const supabase = await getSupabaseClient();
     const { error } = await supabase.from("scans").update(updates).eq("id", id);
-    if (error) {
-      console.error("[db] Supabase updateScan error, falling back:", error.message);
-      localUpdateScan(id, updates);
-    }
+    if (error) console.error("[db] updateScan:", error.message);
     return;
   }
   localUpdateScan(id, updates);
@@ -83,8 +77,8 @@ export async function dbListScans(limit = 20): Promise<Scan[]> {
       .order("created_at", { ascending: false })
       .limit(limit);
     if (error) {
-      console.error("[db] Supabase listScans error, falling back:", error.message);
-      return localListScans(limit);
+      console.error("[db] listScans:", error.message);
+      return [];
     }
     return (data ?? []) as Scan[];
   }
@@ -104,8 +98,8 @@ export async function dbGetReport(id: string): Promise<ReportRecord | null> {
       .eq("id", id)
       .single();
     if (error) {
-      console.error("[db] Supabase getReport error, falling back:", error.message);
-      return localGetReport(id);
+      console.error("[db] getReport:", error.message);
+      return null;
     }
     return data as ReportRecord;
   }
@@ -123,7 +117,11 @@ export async function dbGetReportByScanId(
       .eq("scan_id", scanId)
       .single();
     if (error) {
-      return localGetReportByScanId(scanId);
+      // PGRST116 = no rows found — not a real error
+      if (error.code !== "PGRST116") {
+        console.error("[db] getReportByScanId:", error.message);
+      }
+      return null;
     }
     return data as ReportRecord;
   }
@@ -134,10 +132,7 @@ export async function dbCreateReport(report: ReportRecord): Promise<void> {
   if (useSupabase()) {
     const supabase = await getSupabaseClient();
     const { error } = await supabase.from("reports").insert(report);
-    if (error) {
-      console.error("[db] Supabase createReport error, falling back:", error.message);
-      localCreateReport(report);
-    }
+    if (error) console.error("[db] createReport:", error.message);
     return;
   }
   localCreateReport(report);
@@ -153,8 +148,8 @@ export async function dbListReports(limit = 20): Promise<ReportRecord[]> {
       .order("created_at", { ascending: false })
       .limit(limit);
     if (error) {
-      console.error("[db] Supabase listReports error, falling back:", error.message);
-      return localListReports(limit);
+      console.error("[db] listReports:", error.message);
+      return [];
     }
     return (data ?? []) as ReportRecord[];
   }
@@ -170,7 +165,10 @@ export async function dbGetDemoReport(): Promise<ReportRecord | null> {
       .eq("is_demo", true)
       .single();
     if (error) {
-      return localGetDemoReport();
+      if (error.code !== "PGRST116") {
+        console.error("[db] getDemoReport:", error.message);
+      }
+      return null;
     }
     return data as ReportRecord;
   }
