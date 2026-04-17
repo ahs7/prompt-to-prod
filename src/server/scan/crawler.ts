@@ -26,8 +26,9 @@ const CRAWL_PATHS = [
   "/register",
 ];
 
-const TOTAL_CRAWL_TIMEOUT_MS = 10_000;
-const PER_PAGE_TIMEOUT_MS = 5_000;
+// Kept tight so the fetch stage completes well inside Vercel's 10 s limit
+const TOTAL_CRAWL_TIMEOUT_MS = 5_000;
+const PER_PAGE_TIMEOUT_MS = 2_500;
 
 async function fetchWithTimeout(
   url: string,

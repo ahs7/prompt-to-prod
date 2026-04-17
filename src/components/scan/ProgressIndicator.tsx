@@ -3,117 +3,168 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const STAGE_LABELS: Record<string, string> = {
-  validating: "Validating URL...",
-  fetching: "Fetching pages...",
-  crawling: "Analyzing content...",
-  performance: "Running performance checks...",
-  generating: "Generating your report...",
-};
-
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 3; // fetch, analyze, complete
 
 interface ProgressIndicatorProps {
   scanId: string;
   url: string;
 }
 
+type Phase = "fetch" | "analyze" | "done" | "error";
+
 export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
   const router = useRouter();
-  const [step, setStep] = useState(0);
-  const [statusMessage, setStatusMessage] = useState("Connecting...");
+  const [phase, setPhase] = useState<Phase>("fetch");
+  const [message, setMessage] = useState("Fetching pages...");
+  const [step, setStep] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [dots, setDots] = useState("");
-  const sourceRef = useRef<EventSource | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Animated dots
   useEffect(() => {
-    const interval = setInterval(
+    const id = setInterval(
       () => setDots((d) => (d.length >= 3 ? "" : d + ".")),
       400
     );
-    return () => clearInterval(interval);
+    return () => clearInterval(id);
   }, []);
 
-  // Polling fallback — used if EventSource fails or isn't supported
-  const startPolling = (scanId: string) => {
+  // Polling fallback — used if the analyze stream drops before completing
+  function startPolling() {
     let attempts = 0;
-    const MAX = 80; // 80 × 3 s = 4 min
-
     const poll = async () => {
-      if (attempts++ > MAX) {
+      if (attempts++ > 80) {
         setError("Scan is taking longer than expected. Please try again.");
         return;
       }
       try {
         const res = await fetch(`/api/scan/${scanId}`);
-        const data = await res.json();
+        const data = (await res.json()) as {
+          status: string;
+          reportId?: string;
+          error?: string;
+        };
         if (data.status === "complete" && data.reportId) {
           router.push(`/report/${data.reportId}`);
           return;
         }
         if (data.status === "failed") {
-          setError(data.error ?? "The scan failed. Please check the URL and try again.");
+          setError(data.error ?? "Scan failed. Please check the URL and try again.");
           return;
         }
-        setTimeout(poll, 3000);
+        setTimeout(poll, 3_000);
       } catch {
-        setTimeout(poll, 5000);
+        setTimeout(poll, 5_000);
       }
     };
+    setTimeout(poll, 3_000);
+  }
 
-    setTimeout(poll, 3000);
-  };
-
-  // Main effect: open SSE stream, fall back to polling on error
   useEffect(() => {
-    if (typeof EventSource === "undefined") {
-      // SSE not available (very rare in modern browsers)
-      startPolling(scanId);
-      return;
+    const abort = new AbortController();
+    abortRef.current = abort;
+
+    async function run() {
+      // ── Stage 1: fetch + crawl (Node.js, <10 s) ──────────────────────────
+      try {
+        const res = await fetch(`/api/scan/${scanId}/fetch`, {
+          method: "POST",
+          signal: abort.signal,
+        });
+        const data = (await res.json()) as { ok?: boolean; error?: string };
+
+        if (!res.ok || !data.ok) {
+          setError(data.error ?? "Failed to fetch the page. Please try again.");
+          setPhase("error");
+          return;
+        }
+      } catch (err) {
+        if ((err as Error).name === "AbortError") return;
+        setError("Network error during fetch. Please try again.");
+        setPhase("error");
+        return;
+      }
+
+      if (abort.signal.aborted) return;
+
+      // ── Stage 2: AI analysis (Edge, streaming) ────────────────────────────
+      setPhase("analyze");
+      setStep(2);
+      setMessage("Analyzing content...");
+
+      // Brief pause so the UI updates before the next request
+      await new Promise((r) => setTimeout(r, 300));
+      setMessage("Generating your report...");
+      setStep(3);
+
+      try {
+        const res = await fetch(`/api/scan/${scanId}/analyze`, {
+          method: "POST",
+          signal: abort.signal,
+        });
+
+        if (!res.ok || !res.body) {
+          // Might already be complete — fall back to polling
+          startPolling();
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE events are separated by \n\n
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() ?? ""; // keep the incomplete tail
+
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith("data:")) continue;
+            let evt: Record<string, unknown>;
+            try {
+              evt = JSON.parse(line.slice(5).trim()) as Record<string, unknown>;
+            } catch {
+              continue;
+            }
+
+            if (evt.event === "heartbeat") continue;
+
+            if (evt.event === "progress" && typeof evt.message === "string") {
+              setMessage(evt.message);
+            }
+
+            if (evt.event === "complete" && typeof evt.reportId === "string") {
+              setPhase("done");
+              router.push(`/report/${evt.reportId}`);
+              return;
+            }
+
+            if (evt.event === "error" && typeof evt.message === "string") {
+              setError(evt.message);
+              setPhase("error");
+              return;
+            }
+          }
+        }
+
+        // Stream ended without a complete event — fall back to polling
+        startPolling();
+      } catch (err) {
+        if ((err as Error).name === "AbortError") return;
+        // Stream dropped — poll for result
+        startPolling();
+      }
     }
 
-    const source = new EventSource(`/api/scan/${scanId}/run`);
-    sourceRef.current = source;
-
-    source.onmessage = (e: MessageEvent<string>) => {
-      let data: Record<string, unknown>;
-      try {
-        data = JSON.parse(e.data) as Record<string, unknown>;
-      } catch {
-        return;
-      }
-
-      if (data.event === "heartbeat") return;
-
-      if (data.event === "progress") {
-        const msg = STAGE_LABELS[data.stage as string] ?? (data.message as string);
-        setStatusMessage(msg);
-        setStep((data.step as number) ?? 0);
-        return;
-      }
-
-      if (data.event === "complete" && typeof data.reportId === "string") {
-        source.close();
-        router.push(`/report/${data.reportId}`);
-        return;
-      }
-
-      if (data.event === "error") {
-        source.close();
-        setError((data.message as string) ?? "Scan failed. Please try again.");
-      }
-    };
-
-    source.onerror = () => {
-      // Connection dropped (function timed out or network issue).
-      // Close SSE and fall back to polling — the DB might already have the result.
-      source.close();
-      setStatusMessage("Finalizing your report...");
-      startPolling(scanId);
-    };
-
-    return () => source.close();
+    run();
+    return () => abort.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanId]);
 
@@ -132,7 +183,7 @@ export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
     );
   }
 
-  const progress = step === 0 ? 5 : Math.round((step / TOTAL_STEPS) * 100);
+  const progress = Math.max(5, Math.round((step / TOTAL_STEPS) * 100));
 
   return (
     <div className="space-y-8 text-center max-w-md mx-auto">
@@ -170,7 +221,7 @@ export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
       {/* Stage message */}
       <div className="h-8 flex items-center justify-center">
         <p className="text-base font-medium text-slate-200">
-          {statusMessage}
+          {message}
           <span className="text-indigo-400">{dots}</span>
         </p>
       </div>
@@ -184,19 +235,21 @@ export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
           />
         </div>
         <div className="flex justify-between text-xs">
-          {Array.from({ length: TOTAL_STEPS }, (_, i) => (
+          {["Fetch", "Analyze", "Report"].map((label, i) => (
             <span
-              key={i}
-              className={i < step ? "text-indigo-400" : "text-slate-700"}
+              key={label}
+              className={i + 1 <= step ? "text-indigo-400" : "text-slate-700"}
             >
-              {i + 1}
+              {label}
             </span>
           ))}
         </div>
       </div>
 
       <p className="text-xs text-slate-600">
-        This usually takes 30–60 seconds.
+        {phase === "analyze"
+          ? "AI analysis in progress — this takes 20–60 seconds."
+          : "Fetching your pages — usually done in a few seconds."}
       </p>
     </div>
   );

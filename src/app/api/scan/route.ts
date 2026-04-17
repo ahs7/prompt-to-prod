@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createAndStartScan } from "@/server/scan/pipeline";
+import { createAndStartScan, ScanError } from "@/server/scan/pipeline";
 import { checkRateLimit } from "@/lib/rateLimit";
-import { ScanError } from "@/server/scan/normalizeUrl";
 
 const RequestSchema = z.object({
   url: z.string().min(1, "URL is required"),

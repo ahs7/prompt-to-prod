@@ -76,7 +76,7 @@ async function callPageSpeedAPI(
   return { source: "pagespeed", scores, topAudits };
 }
 
-function deriveHeuristicSignals(
+export function deriveHeuristicSignals(
   page: ExtractedPageData
 ): PerformanceSignals {
   const {
