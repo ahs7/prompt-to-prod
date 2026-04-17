@@ -1,20 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-interface Stage {
-  label: string;
-  durationMs: number;
-}
+const STAGE_LABELS: Record<string, string> = {
+  validating: "Validating URL...",
+  fetching: "Fetching pages...",
+  crawling: "Analyzing content...",
+  performance: "Running performance checks...",
+  generating: "Generating your report...",
+};
 
-const STAGES: Stage[] = [
-  { label: "Validating URL...", durationMs: 1500 },
-  { label: "Fetching pages...", durationMs: 4000 },
-  { label: "Analyzing content...", durationMs: 5000 },
-  { label: "Running performance checks...", durationMs: 4000 },
-  { label: "Generating your report...", durationMs: 8000 },
-];
+const TOTAL_STEPS = 5;
 
 interface ProgressIndicatorProps {
   scanId: string;
@@ -23,77 +20,102 @@ interface ProgressIndicatorProps {
 
 export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
   const router = useRouter();
-  const [currentStage, setCurrentStage] = useState(0);
-  const [statusMessage, setStatusMessage] = useState(STAGES[0].label);
+  const [step, setStep] = useState(0);
+  const [statusMessage, setStatusMessage] = useState("Connecting...");
   const [error, setError] = useState<string | null>(null);
   const [dots, setDots] = useState("");
+  const sourceRef = useRef<EventSource | null>(null);
 
   // Animated dots
   useEffect(() => {
-    const interval = setInterval(() => {
-      setDots((d) => (d.length >= 3 ? "" : d + "."));
-    }, 400);
+    const interval = setInterval(
+      () => setDots((d) => (d.length >= 3 ? "" : d + ".")),
+      400
+    );
     return () => clearInterval(interval);
   }, []);
 
-  // Advance through visual stages
-  useEffect(() => {
-    let stage = 0;
-    const advance = () => {
-      if (stage < STAGES.length - 1) {
-        stage++;
-        setCurrentStage(stage);
-        setStatusMessage(STAGES[stage].label);
-      }
-    };
-
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    let elapsed = 0;
-    for (let i = 0; i < STAGES.length; i++) {
-      elapsed += STAGES[i].durationMs;
-      timers.push(setTimeout(advance, elapsed));
-    }
-    return () => timers.forEach(clearTimeout);
-  }, []);
-
-  // Poll scan status
-  useEffect(() => {
+  // Polling fallback — used if EventSource fails or isn't supported
+  const startPolling = (scanId: string) => {
     let attempts = 0;
-    const MAX_ATTEMPTS = 60; // 60 × 3s = 3 minutes
+    const MAX = 80; // 80 × 3 s = 4 min
 
     const poll = async () => {
-      attempts++;
-      if (attempts > MAX_ATTEMPTS) {
+      if (attempts++ > MAX) {
         setError("Scan is taking longer than expected. Please try again.");
         return;
       }
-
       try {
-        const response = await fetch(`/api/scan/${scanId}`);
-        const data = await response.json();
-
+        const res = await fetch(`/api/scan/${scanId}`);
+        const data = await res.json();
         if (data.status === "complete" && data.reportId) {
           router.push(`/report/${data.reportId}`);
           return;
         }
-
         if (data.status === "failed") {
-          setError(
-            data.error ?? "The scan failed. Please check the URL and try again."
-          );
+          setError(data.error ?? "The scan failed. Please check the URL and try again.");
           return;
         }
-
-        // Still scanning — poll again
         setTimeout(poll, 3000);
       } catch {
         setTimeout(poll, 5000);
       }
     };
 
-    const timer = setTimeout(poll, 3000);
-    return () => clearTimeout(timer);
-  }, [scanId, router]);
+    setTimeout(poll, 3000);
+  };
+
+  // Main effect: open SSE stream, fall back to polling on error
+  useEffect(() => {
+    if (typeof EventSource === "undefined") {
+      // SSE not available (very rare in modern browsers)
+      startPolling(scanId);
+      return;
+    }
+
+    const source = new EventSource(`/api/scan/${scanId}/run`);
+    sourceRef.current = source;
+
+    source.onmessage = (e: MessageEvent<string>) => {
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(e.data) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+
+      if (data.event === "heartbeat") return;
+
+      if (data.event === "progress") {
+        const msg = STAGE_LABELS[data.stage as string] ?? (data.message as string);
+        setStatusMessage(msg);
+        setStep((data.step as number) ?? 0);
+        return;
+      }
+
+      if (data.event === "complete" && typeof data.reportId === "string") {
+        source.close();
+        router.push(`/report/${data.reportId}`);
+        return;
+      }
+
+      if (data.event === "error") {
+        source.close();
+        setError((data.message as string) ?? "Scan failed. Please try again.");
+      }
+    };
+
+    source.onerror = () => {
+      // Connection dropped (function timed out or network issue).
+      // Close SSE and fall back to polling — the DB might already have the result.
+      source.close();
+      setStatusMessage("Finalizing your report...");
+      startPolling(scanId);
+    };
+
+    return () => source.close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanId]);
 
   if (error) {
     return (
@@ -110,8 +132,7 @@ export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
     );
   }
 
-  const totalStages = STAGES.length;
-  const progress = Math.round(((currentStage + 1) / totalStages) * 100);
+  const progress = step === 0 ? 5 : Math.round((step / TOTAL_STEPS) * 100);
 
   return (
     <div className="space-y-8 text-center max-w-md mx-auto">
@@ -136,7 +157,7 @@ export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
         </div>
       </div>
 
-      {/* URL being scanned */}
+      {/* URL */}
       <div className="space-y-1">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
           Scanning
@@ -146,9 +167,9 @@ export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
         </p>
       </div>
 
-      {/* Current stage message */}
+      {/* Stage message */}
       <div className="h-8 flex items-center justify-center">
-        <p className="text-base font-medium text-slate-200 animate-fade-in">
+        <p className="text-base font-medium text-slate-200">
           {statusMessage}
           <span className="text-indigo-400">{dots}</span>
         </p>
@@ -158,15 +179,15 @@ export function ProgressIndicator({ scanId, url }: ProgressIndicatorProps) {
       <div className="space-y-2">
         <div className="h-1.5 bg-navy-800 rounded-full overflow-hidden">
           <div
-            className="h-full bg-gradient-to-r from-indigo-600 to-indigo-400 rounded-full transition-all duration-1000"
+            className="h-full bg-gradient-to-r from-indigo-600 to-indigo-400 rounded-full transition-all duration-700"
             style={{ width: `${progress}%` }}
           />
         </div>
-        <div className="flex justify-between text-xs text-slate-600">
-          {STAGES.map((stage, i) => (
+        <div className="flex justify-between text-xs">
+          {Array.from({ length: TOTAL_STEPS }, (_, i) => (
             <span
               key={i}
-              className={i <= currentStage ? "text-indigo-400" : ""}
+              className={i < step ? "text-indigo-400" : "text-slate-700"}
             >
               {i + 1}
             </span>
