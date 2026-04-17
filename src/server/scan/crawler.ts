@@ -21,9 +21,6 @@ const CRAWL_PATHS = [
   "/pricing",
   "/features",
   "/about",
-  "/contact",
-  "/signup",
-  "/register",
 ];
 
 // Kept tight so the fetch stage completes well inside Vercel's 10 s limit
@@ -51,8 +48,8 @@ async function fetchWithTimeout(
 }
 
 /**
- * Shallow-crawls up to 5 additional pages on the same domain.
- * Total timeout: 10 seconds across all crawl attempts.
+ * Shallow-crawls up to 3 key pages on the same domain.
+ * Total timeout: 5 seconds across all crawl attempts.
  */
 export async function crawlSite(baseUrl: string): Promise<CrawlSummary> {
   const parsed = new URL(baseUrl);
@@ -60,7 +57,7 @@ export async function crawlSite(baseUrl: string): Promise<CrawlSummary> {
   const startTime = Date.now();
   const results: CrawlResult[] = [];
 
-  const paths = CRAWL_PATHS.slice(0, 5);
+  const paths = CRAWL_PATHS;
 
   for (const path of paths) {
     const elapsed = Date.now() - startTime;
